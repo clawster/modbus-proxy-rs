@@ -1,6 +1,6 @@
 {
  "source": "https://github.com/TypQxQ/Sigenergy-Local-Modbus custom_components/sigen/modbusregisterdefinitions.py",
- "license": "MIT, Copyright (c) 2025 Andrei Ignat",
+ "license": "MIT, Copyright (c) 2025 Andrei Ignat, see LICENSE.sigenergy",
  "registers": [
   {
    "address": 30000,
@@ -2018,7 +2018,7 @@
   {
    "address": 31023,
    "count": 1,
-   "type": "u16",
+   "type": "s16",
    "gain": 1000,
    "access": "ro",
    "name": "inverter_power_factor",

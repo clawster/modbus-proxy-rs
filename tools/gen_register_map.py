@@ -26,6 +26,14 @@ UNITS = {
 
 ACCESS = {"READ_ONLY": "ro", "HOLDING": "rw", "WRITE_ONLY": "wo"}
 
+# Corrections to the integration's definitions, checked against
+# Modbus_reference_documentation/Sigenergy Modbus Protocol EN_V2.9.pdf
+CORRECTIONS = {
+    # Power factor is signed (S16) in the protocol; as U16 a factor of
+    # -0.951 reads as 64.585.
+    31023: {"type": "s16"},
+}
+
 
 def unit(node):
     if isinstance(node, ast.Constant):
@@ -60,6 +68,7 @@ def registers(tree):
                 entry["unit"] = unit(kw["unit"])
             if "description" in kw:
                 entry["description"] = ast.literal_eval(kw["description"])
+            entry.update(CORRECTIONS.get(entry["address"], {}))
             yield entry
 
 
@@ -75,7 +84,7 @@ def main(source, target):
     out = {
         "source": "https://github.com/TypQxQ/Sigenergy-Local-Modbus "
         "custom_components/sigen/modbusregisterdefinitions.py",
-        "license": "MIT, Copyright (c) 2025 Andrei Ignat",
+        "license": "MIT, Copyright (c) 2025 Andrei Ignat, see LICENSE.sigenergy",
         "registers": regs,
     }
     with open(target, "w", encoding="utf-8") as f:

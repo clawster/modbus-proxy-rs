@@ -1,6 +1,7 @@
 //! The modbus device side: a single task owns the device connection and
 //! serves requests from all clients, one at a time, through a channel.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
@@ -10,17 +11,18 @@ use tokio::time::timeout;
 
 use crate::frame::{read_frame, set_nodelay, split_connection, Frame, TcpReader, TcpWriter};
 use crate::registers::RegisterMap;
+use crate::settings::Modbus;
 use crate::timeouts::DEVICE_IO_TIMEOUT;
 use crate::Result;
 
 pub(crate) type ReplySender = oneshot::Sender<Frame>;
 
-/// Requests from client tasks to the device task.
+/// Requests from client tasks to the device task, with the client address.
 #[derive(Debug)]
 pub(crate) enum Message {
-    Connection,
-    Disconnection,
-    Packet(Frame, ReplySender),
+    Connection(SocketAddr),
+    Disconnection(SocketAddr),
+    Packet(Frame, SocketAddr, ReplySender),
 }
 
 pub(crate) type ChannelRx = mpsc::Receiver<Message>;
@@ -34,6 +36,8 @@ async fn create_connection(url: &str) -> Result<(TcpReader, TcpWriter)> {
 
 pub(crate) struct Device {
     url: String,
+    /// Name in the register log
+    name: String,
     registers: Option<Arc<RegisterMap>>,
     stream: Option<(TcpReader, TcpWriter)>,
 }
@@ -42,6 +46,7 @@ impl Device {
     pub(crate) fn new(url: &str, registers: Option<Arc<RegisterMap>>) -> Device {
         Device {
             url: url.to_string(),
+            name: url.to_string(),
             registers,
             stream: None,
         }
@@ -99,7 +104,12 @@ impl Device {
         }
     }
 
-    async fn handle_packet(&mut self, frame: Frame, channel: ReplySender) -> Result<()> {
+    async fn handle_packet(
+        &mut self,
+        frame: Frame,
+        client: SocketAddr,
+        channel: ReplySender,
+    ) -> Result<()> {
         info!("modbus request {}: {} bytes", self.url, frame.len());
         debug!("modbus request {}: {:?}", self.url, &frame[..]);
         let reply = self.write_read(&frame).await?;
@@ -107,7 +117,7 @@ impl Device {
         debug!("modbus reply {}: {:?}", self.url, &reply[..]);
         if let Some(registers) = &self.registers {
             for line in registers.describe(&frame, &reply) {
-                info!(target: "modbus_proxy_rs::registers", "{}: {}", self.url, line);
+                info!(target: "modbus_proxy_rs::registers", "{} -> {}: {}", client, self.name, line);
             }
         }
         channel
@@ -120,20 +130,23 @@ impl Device {
 
         while let Some(message) = channel.recv().await {
             match message {
-                Message::Connection => {
+                Message::Connection(client) => {
                     nb_clients += 1;
-                    info!("new client connection (active = {})", nb_clients);
+                    info!(
+                        "new client connection from {} (active = {})",
+                        client, nb_clients
+                    );
                 }
-                Message::Disconnection => {
+                Message::Disconnection(client) => {
                     nb_clients -= 1;
-                    info!("client disconnection (active = {})", nb_clients);
+                    info!("client {} disconnected (active = {})", client, nb_clients);
                     if nb_clients == 0 {
                         info!("disconnecting from modbus at {} (no clients)", self.url);
                         self.disconnect();
                     }
                 }
-                Message::Packet(frame, channel) => {
-                    if self.handle_packet(frame, channel).await.is_err() {
+                Message::Packet(frame, client, channel) => {
+                    if self.handle_packet(frame, client, channel).await.is_err() {
                         self.disconnect();
                     }
                 }
@@ -143,11 +156,14 @@ impl Device {
 
     /// Serve requests until every sender of `channel` is dropped.
     pub(crate) async fn launch(
-        url: &str,
+        config: &Modbus,
         registers: Option<Arc<RegisterMap>>,
         channel: &mut ChannelRx,
     ) {
-        let mut modbus = Self::new(url, registers);
+        let mut modbus = Self::new(&config.url, registers);
+        if let Some(name) = &config.name {
+            modbus.name = name.clone();
+        }
         modbus.run(channel).await;
     }
 }
@@ -287,14 +303,20 @@ mod tests {
         let mut device = Device::new(&addr, None);
         // reply delivered
         let (tx, rx) = oneshot::channel();
-        let (result, _) = tokio::join!(device.handle_packet(REQUEST.to_vec(), tx), echo_once(&l));
+        let (result, _) = tokio::join!(
+            device.handle_packet(REQUEST.to_vec(), peer(), tx),
+            echo_once(&l)
+        );
         result.unwrap();
         assert_eq!(rx.await.unwrap(), REQUEST);
         // client went away before the reply
         device.disconnect();
         let (tx, rx) = oneshot::channel();
         drop(rx);
-        let (result, _) = tokio::join!(device.handle_packet(REQUEST.to_vec(), tx), echo_once(&l));
+        let (result, _) = tokio::join!(
+            device.handle_packet(REQUEST.to_vec(), peer(), tx),
+            echo_once(&l)
+        );
         assert!(result
             .unwrap_err()
             .to_string()
@@ -303,7 +325,10 @@ mod tests {
         drop(l);
         device.disconnect();
         let (tx, _rx) = oneshot::channel();
-        assert!(device.handle_packet(REQUEST.to_vec(), tx).await.is_err());
+        assert!(device
+            .handle_packet(REQUEST.to_vec(), peer(), tx)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -315,7 +340,10 @@ mod tests {
         // write plant_start_stop = 1, echoed back by the device
         let request = vec![0, 1, 0, 0, 0, 6, 247, 6, 0x9c, 0x40, 0, 1];
         let (tx, rx) = oneshot::channel();
-        let (result, _) = tokio::join!(device.handle_packet(request.clone(), tx), echo_once(&l));
+        let (result, _) = tokio::join!(
+            device.handle_packet(request.clone(), peer(), tx),
+            echo_once(&l)
+        );
         result.unwrap();
         assert_eq!(rx.await.unwrap(), request);
     }
@@ -325,12 +353,13 @@ mod tests {
         init();
         let (l, addr) = listener().await;
         let (tx, mut rx) = mpsc::channel(8);
-        let run = Device::launch(&addr, None, &mut rx);
+        let config = modbus(&addr, Some("plant"));
+        let run = Device::launch(&config, None, &mut rx);
         let script = async {
-            tx.send(Message::Connection).await.unwrap();
-            tx.send(Message::Connection).await.unwrap();
+            tx.send(Message::Connection(peer())).await.unwrap();
+            tx.send(Message::Connection(peer())).await.unwrap();
             let (reply_tx, reply_rx) = oneshot::channel();
-            tx.send(Message::Packet(REQUEST.to_vec(), reply_tx))
+            tx.send(Message::Packet(REQUEST.to_vec(), peer(), reply_tx))
                 .await
                 .unwrap();
             echo_once(&l).await;
@@ -338,12 +367,12 @@ mod tests {
             // failing packet (reply receiver gone) disconnects the device
             let (reply_tx, reply_rx) = oneshot::channel();
             drop(reply_rx);
-            tx.send(Message::Packet(REQUEST.to_vec(), reply_tx))
+            tx.send(Message::Packet(REQUEST.to_vec(), peer(), reply_tx))
                 .await
                 .unwrap();
             echo_once(&l).await;
-            tx.send(Message::Disconnection).await.unwrap();
-            tx.send(Message::Disconnection).await.unwrap();
+            tx.send(Message::Disconnection(peer())).await.unwrap();
+            tx.send(Message::Disconnection(peer())).await.unwrap();
             drop(tx);
         };
         tokio::join!(run, script);

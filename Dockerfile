@@ -46,6 +46,9 @@ RUN x86_64-linux-gnu-strip -s ./target/x86_64-unknown-linux-musl/release/modbus-
 # our final base
 FROM scratch
 
+LABEL org.opencontainers.image.source="https://github.com/clawster/modbus-proxy-rs" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
 COPY --from=build /etc/passwd /etc/passwd
 COPY --from=build /etc/group /etc/group
 
@@ -55,8 +58,9 @@ USER guest:guest
 # Copy the build artifact from the build stage
 COPY --from=build /modbus-proxy-rs/target/x86_64-unknown-linux-musl/release/modbus-proxy-rs .
 
-# Register maps used to describe requests in the log
+# Register maps used to describe requests in the log (with their licenses)
 COPY registers /etc/modbus-proxy/registers
+COPY LICENSE /usr/share/doc/modbus-proxy-rs/LICENSE
 
 # Set the startup command to run
 ENTRYPOINT ["./modbus-proxy-rs"]

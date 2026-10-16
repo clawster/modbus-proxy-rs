@@ -302,5 +302,12 @@ mod tests {
               (Grid Active Power (>0 buy from grid; <0 sell to grid))"
             ]
         );
+        // power factor is signed (corrected against the protocol PDF)
+        let request = adu(1, &[3, 0x79, 0x2f, 0, 1]);
+        let reply = adu(1, &[3, 2, 0xfc, 0x49]);
+        assert_eq!(
+            map.describe(&request, &reply),
+            ["unit 1 read 31023 inverter_power_factor = -0.951 (Power Factor)"]
+        );
     }
 }

@@ -7,9 +7,11 @@ pub(crate) struct Listen {
     pub(crate) bind: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Modbus {
     pub(crate) url: String,
+    /// Name of the device in the register log, defaults to the url.
+    pub(crate) name: Option<String>,
     /// Register map (JSON) used to describe requests in the log.
     pub(crate) registers: Option<String>,
 }

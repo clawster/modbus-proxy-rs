@@ -8,20 +8,33 @@ This allows multiple clients to communicate with the same modbus device.
 When multiple clients are connected, cross messages are avoided by serializing
 communication on a first come first served REQ/REP basis.
 
-This project is the [Rust][rust] version of the [Python][python] based
-[modbus-proxy][modbus-proxy-py] project.
+This is a fork of [tiagocoutinho/modbus-proxy-rs][upstream], the [Rust][rust]
+version of the [Python][python] based [modbus-proxy][modbus-proxy-py] project.
+On top of the original it adds:
 
-I did it because it fitted my personal goal of exercising with the [Rust][rust]
-programming language and it's async based [tokio] library.
-
-The goal was to produce a robust, highly concurrent server with a low
-memory footprint.
+* **Register descriptions in the log**: with a register map, every request is
+  logged with register names, decoded values and the client that made it. A
+  map for [Sigenergy](#sigenergy) inverters is included.
+* **Robustness**: timeouts on device and client I/O so a stalled device no
+  longer leaves sockets in `CLOSE_WAIT` (upstream PR #12, issue #7), accept
+  errors such as running out of file descriptors are retried instead of
+  crashing, and a busy listen port is reported instead of panicking.
+* **Docker Compose** setup configured from a `.env` file.
+* Up to date dependencies (clap instead of the unmaintained structopt, clean
+  `cargo audit`) and tests with 100% line coverage.
 
 ## Installation
 
+Build from source (needs Rust 1.99 or newer):
+
 ```bash
-$ cargo install modbus-proxy-rs
+$ cargo install --git https://github.com/clawster/modbus-proxy-rs
 ```
+
+or clone the repository and run `cargo build --release`. Note that
+`cargo install modbus-proxy-rs` installs the original crate from crates.io,
+without the changes of this fork. See [Docker](#docker) to run it in a
+container instead.
 
 ## Running the server
 
@@ -88,15 +101,19 @@ register names, decoded values (gain and unit applied) and descriptions:
 devices:
 - modbus:
     url: 10.0.0.30:502
+    name: sigenergy                       # optional, defaults to the url
     registers: registers/sigenergy.json   # optional
   listen:
     bind: 0.0.0.0:10502
 ```
 
 ```
-INFO modbus_proxy_rs::registers] 10.0.0.30:502: unit 247 read 30005 plant_grid_sensor_active_power = -1.234 kW (Grid Active Power (>0 buy from grid; <0 sell to grid))
-INFO modbus_proxy_rs::registers] 10.0.0.30:502: unit 247 write 40000 plant_start_stop = 1 (Start/Stop (0: Stop 1: Start))
+INFO modbus_proxy_rs::registers] 10.0.0.5:51234 -> sigenergy: unit 247 read 30005 plant_grid_sensor_active_power = -1.234 kW (Grid Active Power (>0 buy from grid; <0 sell to grid))
+INFO modbus_proxy_rs::registers] 10.0.0.5:51234 -> sigenergy: unit 247 write 40000 plant_start_stop = 1 (Start/Stop (0: Stop 1: Start))
 ```
+
+Each line starts with the address of the client that sent the request and
+the device `name`.
 
 Reads (functions 3/4), writes (6/16) and exception replies are described.
 The lines are logged at `info` under the `modbus_proxy_rs::registers`
@@ -122,7 +139,9 @@ $ python3 -I tools/gen_register_map.py \
 ```
 
 The generator only parses the Python source, it doesn't import it, so Home
-Assistant isn't needed.
+Assistant isn't needed. It also applies corrections checked against the
+Sigenergy protocol document (e.g. the inverter power factor at 31023 is
+signed), listed in `CORRECTIONS` in the script.
 
 ## Docker
 
@@ -146,6 +165,7 @@ $ docker compose logs -f
 |-----------------|------------------|------------------------------------------|
 | `MODBUS_DEVICE` | `10.0.0.30:502`  | modbus device to proxy (`host:port`)     |
 | `PROXY_PORT`    | `10502`          | port clients connect to                  |
+| `MODBUS_NAME`   | `sigenergy`      | device name in the register log (defaults to `MODBUS_DEVICE`) |
 | `REGISTER_MAP`  | `/etc/modbus-proxy/registers/sigenergy.json` | register map for the log (shipped in the image) |
 | `RUST_LOG`      | `info`           | log level (`debug` dumps requests/replies) |
 
@@ -196,16 +216,48 @@ The container runs as an unprivileged user, so bind ports above 1024 inside
 the container (e.g. `0.0.0.0:5020`) and map them to any host port you like;
 binding `:502` inside the container fails with `Permission denied`.
 
+## Development
+
+```bash
+$ cargo test            # unit tests, including real loopback sockets
+$ cargo clippy --all-targets
+$ ./coverage.sh         # line/region coverage report (needs llvm-tools and jq)
+$ ./coverage.sh --show  # ... with annotated source
+```
+
+The code is split by the path a request takes: `bridge.rs` (clients) sends it
+over a channel to `device.rs` (the device connection); `frame.rs` reads Modbus
+TCP frames, `modbus.rs` and `registers.rs` describe them, `settings.rs` is the
+configuration format and `server.rs` ties it together.
+
+## License
+
+Copyright (C) 2020 Tiago Coutinho, and the contributors of this fork.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](./LICENSE).
+
+The Sigenergy register map is derived from the
+[Sigenergy-Local-Modbus][sigenergy] integration, MIT licensed, Copyright (c)
+2025 Andrei Ignat; see [registers/LICENSE.sigenergy](./registers/LICENSE.sigenergy).
+The Docker image ships both license texts.
+
+This project is not affiliated with or endorsed by Sigenergy Technology Co.,
+Ltd.
+
 ## Credits
 
-### Development Lead
+* Original project and author: [modbus-proxy-rs][upstream] by Tiago Coutinho
+  <coutinhotiago@gmail.com>
+* Upstream contributors: Ingmar Stein (reference counting fix, smaller
+  binaries), Daniel Gruber (shutdown on Ctrl+C/SIGTERM), and schakko, whose
+  [PR #12][pr12] the I/O timeouts are based on
+* Sigenergy register definitions: [Sigenergy-Local-Modbus][sigenergy]
 
-* Tiago Coutinho <coutinhotiago@gmail.com>
-
-### Contributors
-
-None yet. Why not be the first?
-
+[upstream]: https://github.com/tiagocoutinho/modbus-proxy-rs
+[pr12]: https://github.com/tiagocoutinho/modbus-proxy-rs/pull/12
 [rust]: https://www.rust-lang.org/
 [python]: https://python.org/
 [modbus-proxy-py]: https://github.com/tiagocoutinho/modbus-proxy

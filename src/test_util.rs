@@ -1,9 +1,12 @@
 //! Fixtures shared by the unit tests of all modules.
 
+use std::net::SocketAddr;
+
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::frame::{read_frame, split_connection, Frame};
+use crate::settings::Modbus;
 
 /// Read holding register 0 of unit 1.
 pub(crate) const REQUEST: [u8; 12] = [0, 1, 0, 0, 0, 6, 1, 3, 0, 0, 0, 1];
@@ -22,6 +25,20 @@ pub(crate) fn frame(len: usize) -> Frame {
     f.extend((len as u16).to_be_bytes());
     f.resize(6 + len, 7);
     f
+}
+
+/// Address of a client in tests that don't have a real one.
+pub(crate) fn peer() -> SocketAddr {
+    "192.0.2.1:50000".parse().unwrap()
+}
+
+/// Modbus device config without register map.
+pub(crate) fn modbus(url: &str, name: Option<&str>) -> Modbus {
+    Modbus {
+        url: url.to_string(),
+        name: name.map(str::to_string),
+        registers: None,
+    }
 }
 
 pub(crate) async fn listener() -> (TcpListener, String) {
