@@ -1,11 +1,11 @@
-FROM rust:1.99-slim-bookworm as build
+FROM rust:1.99-slim-trixie as build
 
 # 1. Prepare to build using musl
 ENV RUSTFLAGS='-C linker=x86_64-linux-gnu-gcc'
 ENV CC_x86_64_unknown_linux_musl=clang
 ENV AR_x86_64_unknown_linux_musl=llvm-ar
 RUN rustup target add x86_64-unknown-linux-musl
-RUN apt update && apt install -y musl-dev gcc-x86-64-linux-gnu clang llvm
+RUN apt update && apt install -y musl-dev gcc-x86-64-linux-gnu clang llvm adduser
 RUN update-ca-certificates
 
 # 2. setup app user
