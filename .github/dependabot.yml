@@ -1,7 +1,8 @@
-# Dependabot security updates only: open-pull-requests-limit 0 disables
-# routine version-bump PRs, while security update PRs are still opened for
-# vulnerable dependencies (needs "Dependabot alerts" and "Dependabot
-# security updates" enabled in the repository settings).
+# Cargo: security updates only. open-pull-requests-limit 0 disables routine
+# version-bump PRs, while security update PRs are still opened for vulnerable
+# dependencies (needs "Dependabot alerts" and "Dependabot security updates"
+# enabled in the repository settings).
+# GitHub Actions: pinned to commit SHAs, kept at their latest release.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -14,4 +15,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 0
+    groups:
+      actions:
+        patterns: ["*"]
