@@ -1,5 +1,0 @@
-devices:
-- modbus:
-    url: 192.168.1.100:502     # modbus device (change me)
-  listen:
-    bind: 0.0.0.0:5020         # must match the container port in docker-compose.yml

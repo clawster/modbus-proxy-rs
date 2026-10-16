@@ -1,0 +1,25 @@
+services:
+  modbus-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: modbus-proxy-rs:latest
+    container_name: modbus-proxy
+    restart: unless-stopped
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    configs:
+      - source: modbus-proxy
+        target: /etc/modbus-proxy.yml
+    ports:
+      # Container runs as an unprivileged user: listen on a port >1024
+      - "${PROXY_PORT:?set PROXY_PORT in .env}:${PROXY_PORT}"
+
+configs:
+  modbus-proxy:
+    content: |
+      devices:
+      - modbus:
+          url: "${MODBUS_DEVICE:?set MODBUS_DEVICE in .env}"
+        listen:
+          bind: "0.0.0.0:${PROXY_PORT}"

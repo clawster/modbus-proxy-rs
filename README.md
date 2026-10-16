@@ -86,19 +86,27 @@ base to launch modbus-proxy inside a docker container.
 
 ### Docker Compose
 
-The easiest way is the supplied [docker-compose.yml](./docker-compose.yml).
-Edit [modbus-proxy.yml](./modbus-proxy.yml) to point at your modbus device,
-then build and start:
+The easiest way is the supplied [compose.yml](./compose.yml). It is configured
+from a `.env` file next to it, from which compose generates the proxy
+configuration (no config file needed):
 
 ```bash
+$ cp .env.example .env    # then set MODBUS_DEVICE and PROXY_PORT
 $ docker compose build
 $ docker compose up -d
 $ docker compose logs -f
 ```
 
-Clients connect to `<your-hostname/ip>:5020`. After code changes, rebuild and
-restart with `docker compose up -d --build`. Set `RUST_LOG=debug` in
-`docker-compose.yml` for request/reply dumps.
+| Variable        | Example          | Meaning                                  |
+|-----------------|------------------|------------------------------------------|
+| `MODBUS_DEVICE` | `10.0.0.30:502`  | modbus device to proxy (`host:port`)     |
+| `PROXY_PORT`    | `10502`          | port clients connect to                  |
+| `RUST_LOG`      | `info`           | log level (`debug` dumps requests/replies) |
+
+Clients connect to `<your-hostname/ip>:$PROXY_PORT`. After code changes,
+rebuild and restart with `docker compose up -d --build`. To proxy more than
+one device, add entries to the `configs` section of `compose.yml`, each with
+its own listen port, and publish those ports.
 
 ### Plain Docker
 
