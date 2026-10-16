@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::ipfilter::IpFilter;
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct Listen {
     pub(crate) bind: String,
@@ -23,6 +25,9 @@ pub(crate) struct Modbus {
 pub(crate) struct BridgeConfig {
     pub(crate) listen: Listen,
     pub(crate) modbus: Modbus,
+    /// Clients allowed to connect, on top of the global filter.
+    #[serde(default)]
+    pub(crate) ip_filter: IpFilter,
 }
 
 fn default_status_interval() -> u64 {
@@ -34,6 +39,9 @@ pub(crate) struct Settings {
     /// Seconds between status logs of each device, 0 disables them.
     #[serde(default = "default_status_interval")]
     pub(crate) status_interval: u64,
+    /// Clients allowed to connect to any device.
+    #[serde(default)]
+    pub(crate) ip_filter: IpFilter,
     pub(crate) devices: Vec<BridgeConfig>,
 }
 
@@ -67,6 +75,38 @@ mod tests {
         assert_eq!(settings.devices[0].listen.bind, "127.0.0.1:5020");
         assert_eq!(settings.devices[0].modbus.url, "127.0.0.1:1");
         assert_eq!(settings.status(), Some(Duration::from_secs(120)));
+        assert_eq!(settings.ip_filter, IpFilter::default());
+        assert_eq!(settings.devices[0].ip_filter, IpFilter::default());
+    }
+
+    #[test]
+    fn ip_filters() {
+        let yaml = "ip_filter:\n  allow: [10.0.0.0/24]\n  deny: [10.0.0.66]\ndevices:\n- modbus: {url: \"127.0.0.1:1\"}\n  listen: {bind: \"127.0.0.1:1\"}\n  ip_filter: {allow: [\"10.0.0.5\", \"fd00::/8\"]}\n";
+        let path = crate::test_util::write_config("ip-filter", yaml);
+        let settings = Settings::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let names = |networks: &[_]| networks.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(names(&settings.ip_filter.allow), ["10.0.0.0/24"]);
+        assert_eq!(names(&settings.ip_filter.deny), ["10.0.0.66/32"]);
+        let device = &settings.devices[0].ip_filter;
+        assert_eq!(names(&device.allow), ["10.0.0.5/32", "fd00::/8"]);
+        assert!(device.deny.is_empty());
+    }
+
+    #[test]
+    fn invalid_ip_filter() {
+        let path = crate::test_util::write_config(
+            "bad-ip-filter",
+            "ip_filter: {allow: [10.0.0.0/33]}\ndevices: []\n",
+        );
+        let err = Settings::load(&path).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            err.to_string()
+                .contains("invalid IP network \"10.0.0.0/33\""),
+            "{}",
+            err
+        );
     }
 
     #[test]

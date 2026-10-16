@@ -19,6 +19,9 @@ configs:
   modbus-proxy:
     content: |
       status_interval: ${STATUS_INTERVAL:-120}
+      ip_filter:
+        allow: [${IP_ALLOW:-}]
+        deny: [${IP_DENY:-}]
       devices:
       - modbus:
           url: "${MODBUS_DEVICE:?set MODBUS_DEVICE in .env}"

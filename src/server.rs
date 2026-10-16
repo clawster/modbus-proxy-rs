@@ -8,6 +8,7 @@ use futures::future::join_all;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::bridge;
+use crate::ipfilter::IpFilter;
 use crate::registers::RegisterMap;
 use crate::settings::{BridgeConfig, Settings};
 use crate::Result;
@@ -16,6 +17,7 @@ use crate::Result;
 pub struct Server {
     bridges: Vec<(BridgeConfig, Option<Arc<RegisterMap>>)>,
     status: Option<Duration>,
+    ip_filter: IpFilter,
 }
 
 impl Server {
@@ -31,15 +33,20 @@ impl Server {
             };
             bridges.push((config, registers));
         }
-        Ok(Self { bridges, status })
+        Ok(Self {
+            bridges,
+            status,
+            ip_filter: settings.ip_filter,
+        })
     }
 
     pub async fn run(self) {
         let mut tasks = vec![];
         let status = self.status;
         for (config, registers) in self.bridges {
+            let ip_filter = self.ip_filter.clone();
             tasks.push(tokio::spawn(async move {
-                let Err(err) = bridge::run(&config, registers, status).await;
+                let Err(err) = bridge::run(&config, &ip_filter, registers, status).await;
                 error!("bridge {} stopped: {}", config.listen.bind, err);
             }));
         }

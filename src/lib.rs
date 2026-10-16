@@ -9,6 +9,7 @@ extern crate log;
 mod bridge;
 mod device;
 mod frame;
+mod ipfilter;
 mod modbus;
 mod registers;
 mod server;

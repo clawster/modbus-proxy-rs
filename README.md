@@ -84,6 +84,35 @@ devices:
     bind: 0:9001
 ```
 
+## IP filter
+
+Restrict which clients may connect with an `ip_filter`, either globally (for
+every device) or per device. Each filter has an `allow` and a `deny` list of
+addresses (`10.0.0.5`, `fd00::1`) or networks (`10.0.0.0/24`, `fd00::/8`):
+
+```yaml
+ip_filter:                    # global: applies to all devices
+  allow: [10.0.0.0/24, 192.168.1.0/24]
+  deny: [10.0.0.66]
+devices:
+- modbus:
+    url: 10.0.0.30:502
+  listen:
+    bind: 0.0.0.0:10502
+  ip_filter:                  # this device only
+    allow: [10.0.0.5, 10.0.0.6]
+```
+
+A client matching `deny` is refused; if `allow` is not empty, only clients
+matching it are accepted. Without a filter (or with empty lists) everyone is
+accepted. A client must pass both the global and the device filter, so a
+device filter can only narrow down what the global one lets through. In the
+example only 10.0.0.5 and 10.0.0.6 reach the device. IPv4 clients of an IPv6
+listen address (`[::]:10502`) are matched against IPv4 networks.
+
+Refused clients are disconnected right away and logged with a warning. The
+proxy refuses to start if a filter contains an invalid entry.
+
 ## Logging
 
 Log levels can be adjusted by setting the `RUST_LOG` environment variable
@@ -189,6 +218,8 @@ $ docker compose logs -f
 | `MODBUS_NAME`   | `sigenergy`      | device name in the register log (defaults to `MODBUS_DEVICE`) |
 | `REGISTER_MAP`  | `/etc/modbus-proxy/registers/sigenergy.json` | register map for the log (shipped in the image) |
 | `STATUS_INTERVAL` | `120`          | seconds between status summaries, `0` disables |
+| `IP_ALLOW`      | `10.0.0.0/24,10.0.0.5` | clients allowed to connect, empty allows all (see [IP filter](#ip-filter)) |
+| `IP_DENY`       | `10.0.0.66`      | clients refused even if allowed          |
 | `RUST_LOG`      | `info`           | log level (`debug` dumps requests/replies) |
 
 Clients connect to `<your-hostname/ip>:$PROXY_PORT`. After code changes,
@@ -249,7 +280,8 @@ $ ./coverage.sh --show  # ... with annotated source
 
 The code is split by the path a request takes: `bridge.rs` (clients) sends it
 over a channel to `device.rs` (the device connection); `frame.rs` reads Modbus
-TCP frames, `modbus.rs` and `registers.rs` describe them, `settings.rs` is the
+TCP frames, `modbus.rs` and `registers.rs` describe them, `ipfilter.rs` decides
+which clients may connect, `settings.rs` is the
 configuration format and `server.rs` ties it together.
 
 ## License

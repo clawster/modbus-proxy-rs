@@ -15,6 +15,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::device::{ChannelTx, Device, Message};
 use crate::frame::{read_frame, set_nodelay, split_connection};
+use crate::ipfilter::IpFilter;
 use crate::registers::RegisterMap;
 use crate::settings::BridgeConfig;
 use crate::timeouts::{ACCEPT_RETRY_DELAY, CLIENT_REQUEST_TIMEOUT};
@@ -27,6 +28,7 @@ type Accept<'a> =
 /// Returns only on a setup error (e.g. the listen address is in use).
 pub(crate) async fn run(
     config: &BridgeConfig,
+    ip_filter: &IpFilter,
     registers: Option<Arc<RegisterMap>>,
     status: Option<Duration>,
 ) -> Result<Infallible> {
@@ -42,10 +44,17 @@ pub(crate) async fn run(
     );
     let listener = &listener;
     let mut accept = move || listener.accept().boxed();
-    serve(&config.listen.bind, &mut accept, tx).await
+    let filters = [ip_filter, &config.ip_filter];
+    serve(&config.listen.bind, &mut accept, &filters, tx).await
 }
 
-async fn serve<'a>(bind: &str, accept: &mut Accept<'a>, tx: ChannelTx) -> Result<Infallible> {
+/// Serve clients accepted by `accept` that pass all `filters`.
+async fn serve<'a>(
+    bind: &str,
+    accept: &mut Accept<'a>,
+    filters: &[&IpFilter],
+    tx: ChannelTx,
+) -> Result<Infallible> {
     loop {
         let (client, peer) = match accept().await {
             Ok(accepted) => accepted,
@@ -56,6 +65,10 @@ async fn serve<'a>(bind: &str, accept: &mut Accept<'a>, tx: ChannelTx) -> Result
                 continue;
             }
         };
+        if !filters.iter().all(|filter| filter.permits(peer.ip())) {
+            warn!("{}: refused client {} (ip_filter)", bind, peer);
+            continue;
+        }
         let tx = tx.clone();
         tokio::spawn(async move {
             if let Err(err) = handle_client(client, peer, tx).await {
@@ -117,6 +130,7 @@ mod tests {
                 bind: bind.to_string(),
             },
             modbus: modbus(url, None),
+            ip_filter: IpFilter::default(),
         }
     }
 
@@ -124,7 +138,11 @@ mod tests {
     async fn bind_error() {
         init();
         let (_l, addr) = listener().await;
-        assert!(run(&bridge(&addr, "unused"), None, None).await.is_err());
+        assert!(
+            run(&bridge(&addr, "unused"), &IpFilter::default(), None, None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -133,6 +151,7 @@ mod tests {
         let (dev, dev_addr) = listener().await;
         let bind = closed_addr().await;
         let config = bridge(&bind, &dev_addr);
+        let ip_filter = IpFilter::default();
         let clients = async {
             sleep(Duration::from_millis(50)).await;
             // client connecting and leaving cleanly
@@ -150,7 +169,10 @@ mod tests {
             assert_eq!(c.read(&mut reply).await.unwrap(), 0);
         };
         let (result, _) = tokio::join!(
-            timeout(Duration::from_millis(500), run(&config, None, None)),
+            timeout(
+                Duration::from_millis(500),
+                run(&config, &ip_filter, None, None)
+            ),
             clients
         );
         assert!(result.is_err());
@@ -173,12 +195,51 @@ mod tests {
             }
             .boxed()
         };
-        assert!(
-            timeout(Duration::from_millis(100), serve("test", &mut accept, tx))
-                .await
-                .is_err()
-        );
+        assert!(timeout(
+            Duration::from_millis(100),
+            serve("test", &mut accept, &[], tx)
+        )
+        .await
+        .is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ip_filter() {
+        init();
+        let (l, addr) = listener().await;
+        let (tx, mut rx) = mpsc::channel(1);
+        let everyone = IpFilter::default();
+        let loopback = IpFilter {
+            deny: vec!["127.0.0.0/8".parse().unwrap()],
+            ..IpFilter::default()
+        };
+        let l = &l;
+        let mut accept = move || l.accept().boxed();
+        let wait = Duration::from_millis(100);
+        // the client passes the first filter but not the second: closed
+        let filters = [&everyone, &loopback];
+        let (result, _) = tokio::join!(
+            timeout(wait, serve("test", &mut accept, &filters, tx.clone())),
+            async {
+                let mut c = TcpStream::connect(&addr).await.unwrap();
+                assert_eq!(c.read(&mut [0u8; 1]).await.unwrap(), 0);
+            }
+        );
+        assert!(result.is_err());
+        assert!(rx.try_recv().is_err());
+        // accepted when all filters let it through
+        let filters = [&everyone];
+        let (result, c) = tokio::join!(
+            timeout(wait, serve("test", &mut accept, &filters, tx)),
+            TcpStream::connect(&addr)
+        );
+        assert!(result.is_err());
+        let client = c.unwrap().local_addr().unwrap();
+        assert_eq!(
+            format!("{:?}", rx.try_recv().unwrap()),
+            format!("Connection({:?})", client)
+        );
     }
 
     #[tokio::test]
