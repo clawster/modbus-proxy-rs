@@ -1,6 +1,7 @@
 //! Top level: runs one bridge per configured device until shutdown.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::join_all;
 #[cfg(unix)]
@@ -14,6 +15,7 @@ use crate::Result;
 #[derive(Debug)]
 pub struct Server {
     bridges: Vec<(BridgeConfig, Option<Arc<RegisterMap>>)>,
+    status: Option<Duration>,
 }
 
 impl Server {
@@ -21,6 +23,7 @@ impl Server {
     pub fn new(config_file: &str) -> Result<Self> {
         let settings = Settings::load(config_file)?;
         let mut bridges = vec![];
+        let status = settings.status();
         for config in settings.devices {
             let registers = match &config.modbus.registers {
                 Some(path) => Some(Arc::new(RegisterMap::load(path)?)),
@@ -28,14 +31,15 @@ impl Server {
             };
             bridges.push((config, registers));
         }
-        Ok(Self { bridges })
+        Ok(Self { bridges, status })
     }
 
     pub async fn run(self) {
         let mut tasks = vec![];
+        let status = self.status;
         for (config, registers) in self.bridges {
             tasks.push(tokio::spawn(async move {
-                let Err(err) = bridge::run(&config, registers).await;
+                let Err(err) = bridge::run(&config, registers, status).await;
                 error!("bridge {} stopped: {}", config.listen.bind, err);
             }));
         }

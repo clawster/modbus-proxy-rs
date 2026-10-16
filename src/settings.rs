@@ -1,5 +1,7 @@
 //! Configuration file format.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -23,9 +25,22 @@ pub(crate) struct BridgeConfig {
     pub(crate) modbus: Modbus,
 }
 
+fn default_status_interval() -> u64 {
+    120
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct Settings {
+    /// Seconds between status logs of each device, 0 disables them.
+    #[serde(default = "default_status_interval")]
+    pub(crate) status_interval: u64,
     pub(crate) devices: Vec<BridgeConfig>,
+}
+
+impl Settings {
+    pub(crate) fn status(&self) -> Option<Duration> {
+        (self.status_interval > 0).then(|| Duration::from_secs(self.status_interval))
+    }
 }
 
 impl Settings {
@@ -51,6 +66,22 @@ mod tests {
         assert_eq!(settings.devices.len(), 1);
         assert_eq!(settings.devices[0].listen.bind, "127.0.0.1:5020");
         assert_eq!(settings.devices[0].modbus.url, "127.0.0.1:1");
+        assert_eq!(settings.status(), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn status_interval() {
+        let settings = |yaml: &str| {
+            let path = crate::test_util::write_config("status", yaml);
+            let settings = Settings::load(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            settings
+        };
+        assert_eq!(
+            settings("status_interval: 30\ndevices: []\n").status(),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(settings("status_interval: 0\ndevices: []\n").status(), None);
     }
 
     #[test]

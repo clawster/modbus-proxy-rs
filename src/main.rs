@@ -15,7 +15,8 @@ struct CmdLine {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    env_logger::init();
+    // RUST_LOG overrides the default level
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = CmdLine::parse();
     if let Err(error) = Server::launch(&args.config_file).await {
         eprintln!("Configuration error: {}", error)

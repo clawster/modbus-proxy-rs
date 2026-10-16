@@ -57,6 +57,29 @@ pub(crate) fn parse(request: &[u8], reply: &[u8]) -> Option<Transaction> {
     })
 }
 
+/// What a request does, from its function code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Kind {
+    /// Read coils, discrete inputs, holding or input registers
+    Read,
+    /// Write coils or registers (including mask write and read/write)
+    Write,
+    Other,
+}
+
+pub(crate) fn request_kind(request: &[u8]) -> Kind {
+    match request.get(7) {
+        Some(1..=4) => Kind::Read,
+        Some(5 | 6 | 15 | 16 | 22 | 23) => Kind::Write,
+        _ => Kind::Other,
+    }
+}
+
+/// Whether `reply` is an exception response.
+pub(crate) fn is_exception(reply: &[u8]) -> bool {
+    reply.get(7).is_some_and(|function| function & 0x80 != 0)
+}
+
 pub(crate) fn exception_name(code: u8) -> &'static str {
     match code {
         1 => "illegal function",
@@ -160,6 +183,18 @@ pub(crate) mod tests {
         assert_eq!(parse(&read, &adu(1, &[3, 4, 0, 1])), None);
         assert_eq!(parse(&adu(1, &[6, 0, 0, 0]), &adu(1, &[6])), None);
         assert_eq!(parse(&adu(1, &[16, 0, 0, 0]), &adu(1, &[16])), None);
+    }
+
+    #[test]
+    fn kinds() {
+        let kind = |function| request_kind(&adu(1, &[function, 0, 0, 0, 1]));
+        assert_eq!([1, 2, 3, 4].map(kind), [Kind::Read; 4]);
+        assert_eq!([5, 6, 15, 16, 22, 23].map(kind), [Kind::Write; 6]);
+        assert_eq!([7, 43].map(kind), [Kind::Other; 2]);
+        assert_eq!(request_kind(&[0; 7]), Kind::Other);
+        assert!(is_exception(&adu(1, &[0x83, 2])));
+        assert!(!is_exception(&adu(1, &[3, 0])));
+        assert!(!is_exception(&[0; 7]));
     }
 
     #[test]

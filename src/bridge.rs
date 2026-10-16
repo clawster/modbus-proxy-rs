@@ -4,6 +4,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -27,12 +28,13 @@ type Accept<'a> =
 pub(crate) async fn run(
     config: &BridgeConfig,
     registers: Option<Arc<RegisterMap>>,
+    status: Option<Duration>,
 ) -> Result<Infallible> {
     let listener = TcpListener::bind(&config.listen.bind).await?;
     let modbus = config.modbus.clone();
     let (tx, mut rx) = mpsc::channel::<Message>(32);
     tokio::spawn(async move {
-        Device::launch(&modbus, registers, &mut rx).await;
+        Device::launch(&modbus, registers, status, &mut rx).await;
     });
     info!(
         "Ready to accept requests on {} to {}",
@@ -122,7 +124,7 @@ mod tests {
     async fn bind_error() {
         init();
         let (_l, addr) = listener().await;
-        assert!(run(&bridge(&addr, "unused"), None).await.is_err());
+        assert!(run(&bridge(&addr, "unused"), None, None).await.is_err());
     }
 
     #[tokio::test]
@@ -148,7 +150,7 @@ mod tests {
             assert_eq!(c.read(&mut reply).await.unwrap(), 0);
         };
         let (result, _) = tokio::join!(
-            timeout(Duration::from_millis(500), run(&config, None)),
+            timeout(Duration::from_millis(500), run(&config, None, None)),
             clients
         );
         assert!(result.is_err());
@@ -253,7 +255,8 @@ mod tests {
             w.flush().await.unwrap();
         };
         let config = modbus(&addr, None);
-        let (result, _, _) = tokio::join!(client, Device::launch(&config, None, &mut rx), device);
+        let (result, _, _) =
+            tokio::join!(client, Device::launch(&config, None, None, &mut rx), device);
         assert!(result.is_err());
     }
 

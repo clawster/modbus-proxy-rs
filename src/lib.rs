@@ -13,6 +13,7 @@ mod modbus;
 mod registers;
 mod server;
 mod settings;
+mod stats;
 #[cfg(test)]
 mod test_util;
 mod timeouts;

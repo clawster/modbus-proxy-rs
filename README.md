@@ -86,11 +86,31 @@ devices:
 
 ## Logging
 
-Log levels can be adjusted by setting the `RUST_LOG` environment variable (default is `warn`):
+Log levels can be adjusted by setting the `RUST_LOG` environment variable
+(default is `info`):
 
 ```bash
 $ RUST_LOG=debug modbus-proxy-rs -c ./modbus-config.yml
 ```
+
+Every `status_interval` seconds (default 120, `0` disables it) each device
+logs a summary: the number of connected clients and the reads, writes and
+errors since the last summary, then one line per connected client with its
+totals:
+
+```yaml
+status_interval: 120
+devices:
+  ...
+```
+
+```
+INFO modbus_proxy_rs::status] sigenergy: 2 clients, last 2m00s: 1240 reads, 1 writes, 0 errors
+INFO modbus_proxy_rs::status] sigenergy: client 10.0.0.5:51234 connected 3h12m05s: 69120 reads, 0 writes, 0 errors
+INFO modbus_proxy_rs::status] sigenergy: client 10.0.0.6:40112 connected 5m10s: 3100 reads, 1 writes, 0 errors
+```
+
+Errors are exception replies and requests the device didn't answer.
 
 ## Register descriptions
 
@@ -108,7 +128,7 @@ devices:
 ```
 
 ```
-INFO modbus_proxy_rs::registers] 10.0.0.5:51234 -> sigenergy: unit 247 read 30005 plant_grid_sensor_active_power = -1.234 kW (Grid Active Power (>0 buy from grid; <0 sell to grid))
+DEBUG modbus_proxy_rs::registers] 10.0.0.5:51234 -> sigenergy: unit 247 read 30005 plant_grid_sensor_active_power = -1.234 kW (Grid Active Power (>0 buy from grid; <0 sell to grid))
 INFO modbus_proxy_rs::registers] 10.0.0.5:51234 -> sigenergy: unit 247 write 40000 plant_start_stop = 1 (Start/Stop (0: Stop 1: Start))
 ```
 
@@ -116,9 +136,10 @@ Each line starts with the address of the client that sent the request and
 the device `name`.
 
 Reads (functions 3/4), writes (6/16) and exception replies are described.
-The lines are logged at `info` under the `modbus_proxy_rs::registers`
-target, so they can be tuned separately, e.g.
-`RUST_LOG=warn,modbus_proxy_rs::registers=info`.
+The lines are logged under the `modbus_proxy_rs::registers` target: reads
+at `debug` (clients poll constantly), writes at `info` and exception
+replies at `warn`. To see reads as well use
+`RUST_LOG=info,modbus_proxy_rs::registers=debug`.
 
 A register map is a JSON file listing `address`, `count`, `type` (`u16`,
 `s16`, `u32`, `s32`, `u64`, `string`), `gain`, and optionally `unit`, `name`
@@ -167,6 +188,7 @@ $ docker compose logs -f
 | `PROXY_PORT`    | `10502`          | port clients connect to                  |
 | `MODBUS_NAME`   | `sigenergy`      | device name in the register log (defaults to `MODBUS_DEVICE`) |
 | `REGISTER_MAP`  | `/etc/modbus-proxy/registers/sigenergy.json` | register map for the log (shipped in the image) |
+| `STATUS_INTERVAL` | `120`          | seconds between status summaries, `0` disables |
 | `RUST_LOG`      | `info`           | log level (`debug` dumps requests/replies) |
 
 Clients connect to `<your-hostname/ip>:$PROXY_PORT`. After code changes,
