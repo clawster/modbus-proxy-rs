@@ -1,4 +1,4 @@
-FROM rust:1.74-slim-bookworm as build
+FROM rust:1.99-slim-bookworm as build
 
 # 1. Prepare to build using musl
 ENV RUSTFLAGS='-C linker=x86_64-linux-gnu-gcc'

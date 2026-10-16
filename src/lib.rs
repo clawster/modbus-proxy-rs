@@ -107,25 +107,25 @@ impl Device {
 
     async fn raw_write_read(&mut self, frame: &Frame) -> Result<Frame> {
         let (reader, writer) = self.stream.as_mut().ok_or("no modbus connection")?;
-        writer.write_all(&frame).await?;
+        writer.write_all(frame).await?;
         writer.flush().await?;
         read_frame(reader).await
     }
 
     async fn write_read(&mut self, frame: &Frame) -> Result<Frame> {
         if self.is_connected() {
-            let result = self.raw_write_read(&frame).await;
+            let result = self.raw_write_read(frame).await;
             match result {
                 Ok(reply) => Ok(reply),
                 Err(error) => {
                     warn!("modbus error: {}. Retrying...", error);
                     self.connect().await?;
-                    self.raw_write_read(&frame).await
+                    self.raw_write_read(frame).await
                 }
             }
         } else {
             self.connect().await?;
-            self.raw_write_read(&frame).await
+            self.raw_write_read(frame).await
         }
     }
 
@@ -137,7 +137,7 @@ impl Device {
         debug!("modbus reply {}: {:?}", self.url, &reply[..]);
         channel
             .send(reply)
-            .or_else(|error| Err(format!("error sending reply to client: {:?}", error).into()))
+            .map_err(|error| format!("error sending reply to client: {:?}", error).into())
     }
 
     async fn run(&mut self, channel: &mut ChannelRx) {
@@ -158,7 +158,7 @@ impl Device {
                     }
                 }
                 Message::Packet(frame, channel) => {
-                    if let Err(_) = self.handle_packet(frame, channel).await {
+                    if self.handle_packet(frame, channel).await.is_err() {
                         self.disconnect();
                     }
                 }
@@ -188,7 +188,7 @@ impl Bridge {
         });
         info!(
             "Ready to accept requests on {} to {}",
-            &self.listen.bind, &self.modbus.url
+            self.listen.bind, self.modbus.url
         );
         loop {
             let (client, _) = listener.accept().await.unwrap();
@@ -256,6 +256,7 @@ impl Server {
     }
 
     pub async fn launch(config_file: &str) -> std::result::Result<(), config::ConfigError> {
-        Ok(Self::new(config_file)?.run().await)
+        let _: () = Self::new(config_file)?.run().await;
+        Ok(())
     }
 }
