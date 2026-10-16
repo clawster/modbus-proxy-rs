@@ -1,0 +1,253 @@
+//! The client side: accepts clients on one listen address and forwards
+//! their requests to the device task of that bridge.
+
+use std::convert::Infallible;
+
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{sleep, timeout};
+
+use crate::device::{ChannelTx, Device, Message};
+use crate::frame::{read_frame, set_nodelay, split_connection};
+use crate::settings::BridgeConfig;
+use crate::timeouts::{ACCEPT_RETRY_DELAY, CLIENT_REQUEST_TIMEOUT};
+use crate::Result;
+
+type Accept<'a> = dyn FnMut() -> BoxFuture<'a, std::io::Result<TcpStream>> + Send + 'a;
+
+/// Run one bridge: spawn its device task and serve clients forever.
+/// Returns only on a setup error (e.g. the listen address is in use).
+pub(crate) async fn run(config: &BridgeConfig) -> Result<Infallible> {
+    let listener = TcpListener::bind(&config.listen.bind).await?;
+    let modbus_url = config.modbus.url.clone();
+    let (tx, mut rx) = mpsc::channel::<Message>(32);
+    tokio::spawn(async move {
+        Device::launch(&modbus_url, &mut rx).await;
+    });
+    info!(
+        "Ready to accept requests on {} to {}",
+        config.listen.bind, config.modbus.url
+    );
+    let listener = &listener;
+    let mut accept =
+        move || async move { listener.accept().await.map(|(client, _)| client) }.boxed();
+    serve(&config.listen.bind, &mut accept, tx).await
+}
+
+async fn serve<'a>(bind: &str, accept: &mut Accept<'a>, tx: ChannelTx) -> Result<Infallible> {
+    loop {
+        let client = match accept().await {
+            Ok(client) => client,
+            Err(err) => {
+                // e.g. EMFILE: don't die, back off and let fds free up
+                error!("accept error on {}: {}", bind, err);
+                sleep(ACCEPT_RETRY_DELAY).await;
+                continue;
+            }
+        };
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = handle_client(client, tx).await {
+                error!("Client error: {:?}", err);
+            }
+        });
+    }
+}
+
+async fn handle_client(client: TcpStream, channel: ChannelTx) -> Result<()> {
+    set_nodelay(&client);
+    timeout(CLIENT_REQUEST_TIMEOUT, channel.send(Message::Connection)).await??;
+
+    let result = client_loop(client, &channel).await;
+
+    // Best effort: the client socket is already closed at this point.
+    let _ = timeout(CLIENT_REQUEST_TIMEOUT, channel.send(Message::Disconnection)).await;
+
+    result
+}
+
+async fn client_loop(client: TcpStream, channel: &ChannelTx) -> Result<()> {
+    let (mut reader, mut writer) = split_connection(client);
+    while let Ok(buf) = read_frame(&mut reader).await {
+        let (tx, rx) = oneshot::channel();
+        timeout(
+            CLIENT_REQUEST_TIMEOUT,
+            channel.send(Message::Packet(buf, tx)),
+        )
+        .await??;
+        let reply = timeout(CLIENT_REQUEST_TIMEOUT, rx).await??;
+        writer.write_all(&reply).await?;
+        writer.flush().await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{Listen, Modbus};
+    use crate::test_util::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+    use tokio::time::error::Elapsed;
+
+    fn bridge(bind: &str, url: &str) -> BridgeConfig {
+        BridgeConfig {
+            listen: Listen {
+                bind: bind.to_string(),
+            },
+            modbus: Modbus {
+                url: url.to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_error() {
+        init();
+        let (_l, addr) = listener().await;
+        assert!(run(&bridge(&addr, "unused")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn proxies_requests() {
+        init();
+        let (dev, dev_addr) = listener().await;
+        let bind = closed_addr().await;
+        let config = bridge(&bind, &dev_addr);
+        let clients = async {
+            sleep(Duration::from_millis(50)).await;
+            // client connecting and leaving cleanly
+            drop(TcpStream::connect(&bind).await.unwrap());
+            // request answered by the device
+            let mut c = TcpStream::connect(&bind).await.unwrap();
+            c.write_all(&REQUEST).await.unwrap();
+            echo_once(&dev).await;
+            let mut reply = [0u8; 12];
+            c.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, REQUEST);
+            // device gone: the client connection is closed
+            drop(dev);
+            c.write_all(&REQUEST).await.unwrap();
+            assert_eq!(c.read(&mut reply).await.unwrap(), 0);
+        };
+        let (result, _) = tokio::join!(timeout(Duration::from_millis(500), run(&config)), clients);
+        assert!(result.is_err());
+        // the bridge is gone: give its device task time to stop
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    #[tokio::test]
+    async fn accept_error_is_retried() {
+        init();
+        let (tx, _rx) = mpsc::channel(1);
+        let calls = AtomicUsize::new(0);
+        let mut accept = || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                match n {
+                    0 => Err(std::io::Error::other("EMFILE")),
+                    _ => std::future::pending().await,
+                }
+            }
+            .boxed()
+        };
+        assert!(
+            timeout(Duration::from_millis(100), serve("test", &mut accept, tx))
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn handle_client_channel_closed() {
+        init();
+        let (_c, server) = pair().await;
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        assert!(handle_client(server, tx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_client_channel_full() {
+        let (_c, server) = pair().await;
+        let (tx, _rx) = mpsc::channel(1);
+        tx.send(Message::Connection).await.unwrap();
+        assert!(handle_client(server, tx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn client_loop_send_errors() {
+        // channel closed
+        let (mut c, server) = pair().await;
+        c.write_all(&REQUEST).await.unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        assert!(client_loop(server, &tx).await.is_err());
+        // channel full
+        let (mut c, server) = pair().await;
+        c.write_all(&REQUEST).await.unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        tx.send(Message::Connection).await.unwrap();
+        assert!(client_loop(server, &tx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn client_loop_reply_errors() {
+        // reply sender dropped
+        let (mut c, server) = pair().await;
+        c.write_all(&REQUEST).await.unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let (result, _) = tokio::join!(client_loop(server, &tx), async {
+            drop(rx.recv().await);
+        });
+        assert!(result.unwrap_err().is::<oneshot::error::RecvError>());
+        // reply never comes
+        let (mut c, server) = pair().await;
+        c.write_all(&REQUEST).await.unwrap();
+        let (result, _msg) = tokio::join!(client_loop(server, &tx), rx.recv());
+        assert!(result.unwrap_err().is::<Elapsed>());
+    }
+
+    /// Client sends a request and resets the connection while the device
+    /// is still answering; the reply of `reply_len` payload bytes can then
+    /// not be written back.
+    async fn client_loop_write_error(reply_len: usize) {
+        let (l, addr) = listener().await;
+        let (mut c, server) = pair().await;
+        c.write_all(&REQUEST).await.unwrap();
+        c.set_zero_linger().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let client = async {
+            let result = client_loop(server, &tx).await;
+            drop(tx);
+            result
+        };
+        let device = async {
+            let (stream, _) = l.accept().await.unwrap();
+            let (mut r, mut w) = split_connection(stream);
+            read_frame(&mut r).await.unwrap();
+            drop(c);
+            sleep(Duration::from_millis(50)).await;
+            w.write_all(&frame(reply_len)).await.unwrap();
+            w.flush().await.unwrap();
+        };
+        let (result, _, _) = tokio::join!(client, Device::launch(&addr, &mut rx), device);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn client_loop_flush_error() {
+        client_loop_write_error(5).await;
+    }
+
+    #[tokio::test]
+    async fn client_loop_write_all_error() {
+        client_loop_write_error(20_000).await;
+    }
+}
