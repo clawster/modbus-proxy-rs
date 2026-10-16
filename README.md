@@ -84,6 +84,24 @@ $ RUST_LOG=debug modbus-proxy-rs -c ./modbus-config.yml
 This project ships with a [Dockerfile](./Dockerfile) which you can use as a
 base to launch modbus-proxy inside a docker container.
 
+### Docker Compose
+
+The easiest way is the supplied [docker-compose.yml](./docker-compose.yml).
+Edit [modbus-proxy.yml](./modbus-proxy.yml) to point at your modbus device,
+then build and start:
+
+```bash
+$ docker compose build
+$ docker compose up -d
+$ docker compose logs -f
+```
+
+Clients connect to `<your-hostname/ip>:5020`. After code changes, rebuild and
+restart with `docker compose up -d --build`. Set `RUST_LOG=debug` in
+`docker-compose.yml` for request/reply dumps.
+
+### Plain Docker
+
 First, build the docker image with:
 
 ```bash
@@ -97,20 +115,20 @@ devices:
 - modbus:
     url: plc1.acme.org:502
   listen:
-    bind: 0:502
+    bind: 0.0.0.0:5020
 ```
 
 The supplied docker image by default runs the command `/modbus-proxy-rs -c /etc/modbus-proxy.yml`.
 Therefore, running launching a container is as simple as:
 
 ```bash
-docker run --init --rm -p 5020:502 -v $PWD/config.yml:/etc/modbus-proxy.yml modbus-proxy
+docker run --init --rm -p 5020:5020 -v $PWD/config.yml:/etc/modbus-proxy.yml modbus-proxy
 ```
 
 You can supply a different configuration path (ex: `/config.yml`):
 
 ```bash
-docker run --init --rm -p 5020:502 -v $PWD/config.yml:/config.yml modbus-proxy -c /config.yml
+docker run --init --rm -p 5020:5020 -v $PWD/config.yml:/config.yml modbus-proxy -c /config.yml
 ```
 
 Now you should be able to access your modbus device through the modbus-proxy by
@@ -119,6 +137,10 @@ connecting your client(s) to `<your-hostname/ip>:5020`.
 Note that for each modbus device you add in the configuration file you need
 to publish the corresponding bind port on the host
 (`-p <host port>:<container port>` argument).
+
+The container runs as an unprivileged user, so bind ports above 1024 inside
+the container (e.g. `0.0.0.0:5020`) and map them to any host port you like;
+binding `:502` inside the container fails with `Permission denied`.
 
 ## Credits
 
