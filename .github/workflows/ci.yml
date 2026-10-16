@@ -19,7 +19,7 @@ jobs:
     name: Clippy and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # installs the toolchain pinned in rust-toolchain.toml
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -30,7 +30,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
