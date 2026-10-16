@@ -1,12 +1,15 @@
 //! The modbus device side: a single task owns the device connection and
 //! serves requests from all clients, one at a time, through a channel.
 
+use std::sync::Arc;
+
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use crate::frame::{read_frame, set_nodelay, split_connection, Frame, TcpReader, TcpWriter};
+use crate::registers::RegisterMap;
 use crate::timeouts::DEVICE_IO_TIMEOUT;
 use crate::Result;
 
@@ -31,13 +34,15 @@ async fn create_connection(url: &str) -> Result<(TcpReader, TcpWriter)> {
 
 pub(crate) struct Device {
     url: String,
+    registers: Option<Arc<RegisterMap>>,
     stream: Option<(TcpReader, TcpWriter)>,
 }
 
 impl Device {
-    pub(crate) fn new(url: &str) -> Device {
+    pub(crate) fn new(url: &str, registers: Option<Arc<RegisterMap>>) -> Device {
         Device {
             url: url.to_string(),
+            registers,
             stream: None,
         }
     }
@@ -100,6 +105,11 @@ impl Device {
         let reply = self.write_read(&frame).await?;
         info!("modbus reply {}: {} bytes", self.url, reply.len());
         debug!("modbus reply {}: {:?}", self.url, &reply[..]);
+        if let Some(registers) = &self.registers {
+            for line in registers.describe(&frame, &reply) {
+                info!(target: "modbus_proxy_rs::registers", "{}: {}", self.url, line);
+            }
+        }
         channel
             .send(reply)
             .map_err(|error| format!("error sending reply to client: {:?}", error).into())
@@ -132,8 +142,12 @@ impl Device {
     }
 
     /// Serve requests until every sender of `channel` is dropped.
-    pub(crate) async fn launch(url: &str, channel: &mut ChannelRx) {
-        let mut modbus = Self::new(url);
+    pub(crate) async fn launch(
+        url: &str,
+        registers: Option<Arc<RegisterMap>>,
+        channel: &mut ChannelRx,
+    ) {
+        let mut modbus = Self::new(url, registers);
         modbus.run(channel).await;
     }
 }
@@ -148,7 +162,7 @@ mod tests {
     use tokio::time::sleep;
 
     async fn connected_device(l: &TcpListener, addr: &str) -> (Device, TcpStream) {
-        let mut device = Device::new(addr);
+        let mut device = Device::new(addr, None);
         device.connect().await.unwrap();
         let (server, _) = l.accept().await.unwrap();
         (device, server)
@@ -167,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn connect_refused() {
         init();
-        let mut device = Device::new(&closed_addr().await);
+        let mut device = Device::new(&closed_addr().await, None);
         assert!(device.connect().await.is_err());
         assert!(!device.is_connected());
         assert!(device.write_read(&REQUEST.to_vec()).await.is_err());
@@ -181,13 +195,13 @@ mod tests {
         let l = socket.listen(0).unwrap();
         let addr = l.local_addr().unwrap().to_string();
         let _queued = TcpStream::connect(&addr).await.unwrap();
-        let err = Device::new(&addr).connect().await.unwrap_err();
+        let err = Device::new(&addr, None).connect().await.unwrap_err();
         assert!(err.is::<Elapsed>());
     }
 
     #[tokio::test]
     async fn raw_write_read_not_connected() {
-        let mut device = Device::new("unused");
+        let mut device = Device::new("unused", None);
         let err = device.raw_write_read(&REQUEST.to_vec()).await.unwrap_err();
         assert_eq!(err.to_string(), "no modbus connection");
     }
@@ -196,7 +210,7 @@ mod tests {
     async fn write_read_connects_and_reuses() {
         init();
         let (l, addr) = listener().await;
-        let mut device = Device::new(&addr);
+        let mut device = Device::new(&addr, None);
         let request = REQUEST.to_vec();
         let (reply, _) = tokio::join!(device.write_read(&request), echo_once(&l));
         assert_eq!(reply.unwrap(), REQUEST);
@@ -270,7 +284,7 @@ mod tests {
     async fn handle_packet() {
         init();
         let (l, addr) = listener().await;
-        let mut device = Device::new(&addr);
+        let mut device = Device::new(&addr, None);
         // reply delivered
         let (tx, rx) = oneshot::channel();
         let (result, _) = tokio::join!(device.handle_packet(REQUEST.to_vec(), tx), echo_once(&l));
@@ -293,11 +307,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_packet_describes_registers() {
+        init();
+        let (l, addr) = listener().await;
+        let map = RegisterMap::load(SIGENERGY_MAP).unwrap();
+        let mut device = Device::new(&addr, Some(Arc::new(map)));
+        // write plant_start_stop = 1, echoed back by the device
+        let request = vec![0, 1, 0, 0, 0, 6, 247, 6, 0x9c, 0x40, 0, 1];
+        let (tx, rx) = oneshot::channel();
+        let (result, _) = tokio::join!(device.handle_packet(request.clone(), tx), echo_once(&l));
+        result.unwrap();
+        assert_eq!(rx.await.unwrap(), request);
+    }
+
+    #[tokio::test]
     async fn run_counts_clients() {
         init();
         let (l, addr) = listener().await;
         let (tx, mut rx) = mpsc::channel(8);
-        let run = Device::launch(&addr, &mut rx);
+        let run = Device::launch(&addr, None, &mut rx);
         let script = async {
             tx.send(Message::Connection).await.unwrap();
             tx.send(Message::Connection).await.unwrap();

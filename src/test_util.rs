@@ -52,17 +52,26 @@ pub(crate) async fn echo_once(l: &TcpListener) {
     w.flush().await.unwrap();
 }
 
-/// Config file with one device (unreachable modbus url) listening on `bind`.
-pub(crate) fn config_file(name: &str, bind: &str) -> String {
+/// The Sigenergy register map shipped with the proxy.
+pub(crate) const SIGENERGY_MAP: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/registers/sigenergy.json");
+
+/// Write `yaml` to a temporary config file named after `name`.
+pub(crate) fn write_config(name: &str, yaml: &str) -> String {
     let path = std::env::temp_dir().join(format!(
         "modbus-proxy-test-{}-{}.yml",
         name,
         std::process::id()
     ));
+    std::fs::write(&path, yaml).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// Config file with one device (unreachable modbus url) listening on `bind`.
+pub(crate) fn config_file(name: &str, bind: &str) -> String {
     let yaml = format!(
         "devices:\n- modbus: {{url: \"127.0.0.1:1\"}}\n  listen: {{bind: \"{}\"}}\n",
         bind
     );
-    std::fs::write(&path, yaml).unwrap();
-    path.to_string_lossy().into_owned()
+    write_config(name, &yaml)
 }

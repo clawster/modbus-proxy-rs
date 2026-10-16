@@ -10,6 +10,8 @@ pub(crate) struct Listen {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Modbus {
     pub(crate) url: String,
+    /// Register map (JSON) used to describe requests in the log.
+    pub(crate) registers: Option<String>,
 }
 
 /// One proxied device: clients connecting to `listen` are forwarded to `modbus`.

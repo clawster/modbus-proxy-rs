@@ -79,6 +79,51 @@ Log levels can be adjusted by setting the `RUST_LOG` environment variable (defau
 $ RUST_LOG=debug modbus-proxy-rs -c ./modbus-config.yml
 ```
 
+## Register descriptions
+
+Give a device a register map and every request is logged in words, with
+register names, decoded values (gain and unit applied) and descriptions:
+
+```yaml
+devices:
+- modbus:
+    url: 10.0.0.30:502
+    registers: registers/sigenergy.json   # optional
+  listen:
+    bind: 0.0.0.0:10502
+```
+
+```
+INFO modbus_proxy_rs::registers] 10.0.0.30:502: unit 247 read 30005 plant_grid_sensor_active_power = -1.234 kW (Grid Active Power (>0 buy from grid; <0 sell to grid))
+INFO modbus_proxy_rs::registers] 10.0.0.30:502: unit 247 write 40000 plant_start_stop = 1 (Start/Stop (0: Stop 1: Start))
+```
+
+Reads (functions 3/4), writes (6/16) and exception replies are described.
+The lines are logged at `info` under the `modbus_proxy_rs::registers`
+target, so they can be tuned separately, e.g.
+`RUST_LOG=warn,modbus_proxy_rs::registers=info`.
+
+A register map is a JSON file listing `address`, `count`, `type` (`u16`,
+`s16`, `u32`, `s32`, `u64`, `string`), `gain`, and optionally `unit`, `name`
+and `description` per register; see [registers/](./registers). The proxy
+refuses to start if a configured map can't be loaded.
+
+### Sigenergy
+
+[registers/sigenergy.json](./registers/sigenergy.json) is generated from the
+register definitions of the [Sigenergy-Local-Modbus][sigenergy] Home
+Assistant integration (MIT), included as a git submodule:
+
+```bash
+$ git submodule update --init
+$ python3 -I tools/gen_register_map.py \
+    Sigenergy-Local-Modbus/custom_components/sigen/modbusregisterdefinitions.py \
+    registers/sigenergy.json
+```
+
+The generator only parses the Python source, it doesn't import it, so Home
+Assistant isn't needed.
+
 ## Docker
 
 This project ships with a [Dockerfile](./Dockerfile) which you can use as a
@@ -101,6 +146,7 @@ $ docker compose logs -f
 |-----------------|------------------|------------------------------------------|
 | `MODBUS_DEVICE` | `10.0.0.30:502`  | modbus device to proxy (`host:port`)     |
 | `PROXY_PORT`    | `10502`          | port clients connect to                  |
+| `REGISTER_MAP`  | `/etc/modbus-proxy/registers/sigenergy.json` | register map for the log (shipped in the image) |
 | `RUST_LOG`      | `info`           | log level (`debug` dumps requests/replies) |
 
 Clients connect to `<your-hostname/ip>:$PROXY_PORT`. After code changes,
@@ -164,3 +210,4 @@ None yet. Why not be the first?
 [python]: https://python.org/
 [modbus-proxy-py]: https://github.com/tiagocoutinho/modbus-proxy
 [tokio]: https://tokio.rs/
+[sigenergy]: https://github.com/TypQxQ/Sigenergy-Local-Modbus

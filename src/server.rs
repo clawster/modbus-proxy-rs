@@ -1,29 +1,41 @@
 //! Top level: runs one bridge per configured device until shutdown.
 
+use std::sync::Arc;
+
 use futures::future::join_all;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::bridge;
-use crate::settings::Settings;
+use crate::registers::RegisterMap;
+use crate::settings::{BridgeConfig, Settings};
+use crate::Result;
 
 #[derive(Debug)]
 pub struct Server {
-    settings: Settings,
+    bridges: Vec<(BridgeConfig, Option<Arc<RegisterMap>>)>,
 }
 
 impl Server {
-    pub fn new(config_file: &str) -> Result<Self, config::ConfigError> {
-        Ok(Self {
-            settings: Settings::load(config_file)?,
-        })
+    /// Load the configuration and the register maps it refers to.
+    pub fn new(config_file: &str) -> Result<Self> {
+        let settings = Settings::load(config_file)?;
+        let mut bridges = vec![];
+        for config in settings.devices {
+            let registers = match &config.modbus.registers {
+                Some(path) => Some(Arc::new(RegisterMap::load(path)?)),
+                None => None,
+            };
+            bridges.push((config, registers));
+        }
+        Ok(Self { bridges })
     }
 
     pub async fn run(self) {
         let mut tasks = vec![];
-        for config in self.settings.devices {
+        for (config, registers) in self.bridges {
             tasks.push(tokio::spawn(async move {
-                let Err(err) = bridge::run(&config).await;
+                let Err(err) = bridge::run(&config, registers).await;
                 error!("bridge {} stopped: {}", config.listen.bind, err);
             }));
         }
@@ -40,7 +52,7 @@ impl Server {
         info!("Shutting down");
     }
 
-    pub async fn launch(config_file: &str) -> Result<(), config::ConfigError> {
+    pub async fn launch(config_file: &str) -> Result<()> {
         let _: () = Self::new(config_file)?.run().await;
         Ok(())
     }
@@ -61,6 +73,27 @@ mod tests {
         assert!(Server::launch("/nonexistent/modbus-proxy.yml")
             .await
             .is_err());
+    }
+
+    #[test]
+    fn loads_register_maps() {
+        let yaml = format!(
+            "devices:\n- modbus: {{url: \"127.0.0.1:1\", registers: \"{}\"}}\n  listen: {{bind: \"127.0.0.1:1\"}}\n",
+            SIGENERGY_MAP
+        );
+        let path = write_config("maps", &yaml);
+        let server = Server::new(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(server.bridges[0].1.is_some());
+    }
+
+    #[test]
+    fn register_map_error() {
+        let yaml = "devices:\n- modbus: {url: \"127.0.0.1:1\", registers: /nonexistent.json}\n  listen: {bind: \"127.0.0.1:1\"}\n";
+        let path = write_config("bad-map", yaml);
+        let err = Server::new(&path).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(err.to_string().starts_with("/nonexistent.json: "));
     }
 
     #[tokio::test]

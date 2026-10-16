@@ -21,5 +21,6 @@ configs:
       devices:
       - modbus:
           url: "${MODBUS_DEVICE:?set MODBUS_DEVICE in .env}"
+          registers: "${REGISTER_MAP:-/etc/modbus-proxy/registers/sigenergy.json}"
         listen:
           bind: "0.0.0.0:${PROXY_PORT}"

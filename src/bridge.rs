@@ -2,6 +2,7 @@
 //! their requests to the device task of that bridge.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -12,6 +13,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::device::{ChannelTx, Device, Message};
 use crate::frame::{read_frame, set_nodelay, split_connection};
+use crate::registers::RegisterMap;
 use crate::settings::BridgeConfig;
 use crate::timeouts::{ACCEPT_RETRY_DELAY, CLIENT_REQUEST_TIMEOUT};
 use crate::Result;
@@ -20,12 +22,15 @@ type Accept<'a> = dyn FnMut() -> BoxFuture<'a, std::io::Result<TcpStream>> + Sen
 
 /// Run one bridge: spawn its device task and serve clients forever.
 /// Returns only on a setup error (e.g. the listen address is in use).
-pub(crate) async fn run(config: &BridgeConfig) -> Result<Infallible> {
+pub(crate) async fn run(
+    config: &BridgeConfig,
+    registers: Option<Arc<RegisterMap>>,
+) -> Result<Infallible> {
     let listener = TcpListener::bind(&config.listen.bind).await?;
     let modbus_url = config.modbus.url.clone();
     let (tx, mut rx) = mpsc::channel::<Message>(32);
     tokio::spawn(async move {
-        Device::launch(&modbus_url, &mut rx).await;
+        Device::launch(&modbus_url, registers, &mut rx).await;
     });
     info!(
         "Ready to accept requests on {} to {}",
@@ -102,6 +107,7 @@ mod tests {
             },
             modbus: Modbus {
                 url: url.to_string(),
+                registers: None,
             },
         }
     }
@@ -110,7 +116,7 @@ mod tests {
     async fn bind_error() {
         init();
         let (_l, addr) = listener().await;
-        assert!(run(&bridge(&addr, "unused")).await.is_err());
+        assert!(run(&bridge(&addr, "unused"), None).await.is_err());
     }
 
     #[tokio::test]
@@ -135,7 +141,10 @@ mod tests {
             c.write_all(&REQUEST).await.unwrap();
             assert_eq!(c.read(&mut reply).await.unwrap(), 0);
         };
-        let (result, _) = tokio::join!(timeout(Duration::from_millis(500), run(&config)), clients);
+        let (result, _) = tokio::join!(
+            timeout(Duration::from_millis(500), run(&config, None)),
+            clients
+        );
         assert!(result.is_err());
         // the bridge is gone: give its device task time to stop
         sleep(Duration::from_millis(50)).await;
@@ -237,7 +246,7 @@ mod tests {
             w.write_all(&frame(reply_len)).await.unwrap();
             w.flush().await.unwrap();
         };
-        let (result, _, _) = tokio::join!(client, Device::launch(&addr, &mut rx), device);
+        let (result, _, _) = tokio::join!(client, Device::launch(&addr, None, &mut rx), device);
         assert!(result.is_err());
     }
 

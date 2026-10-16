@@ -9,6 +9,8 @@ extern crate log;
 mod bridge;
 mod device;
 mod frame;
+mod modbus;
+mod registers;
 mod server;
 mod settings;
 #[cfg(test)]

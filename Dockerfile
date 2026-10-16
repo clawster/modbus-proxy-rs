@@ -55,6 +55,9 @@ USER guest:guest
 # Copy the build artifact from the build stage
 COPY --from=build /modbus-proxy-rs/target/x86_64-unknown-linux-musl/release/modbus-proxy-rs .
 
+# Register maps used to describe requests in the log
+COPY registers /etc/modbus-proxy/registers
+
 # Set the startup command to run
 ENTRYPOINT ["./modbus-proxy-rs"]
 CMD ["-c", "/etc/modbus-proxy.yml"]

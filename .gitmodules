@@ -1,0 +1,3 @@
+[submodule "Sigenergy-Local-Modbus"]
+	path = Sigenergy-Local-Modbus
+	url = https://github.com/TypQxQ/Sigenergy-Local-Modbus.git
